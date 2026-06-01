@@ -3,16 +3,39 @@
 
 MegaMUD ships per-table .md files (Monsters.md, Items.md, Spells.md,
 etc.) as a custom binary format with magic 'MDB2' — NOT Microsoft Jet
-DB despite the file extension. This script extracts the per-monster
-"overlay" fields (the values surfaced in the Monster/NPC Details
-dialog) into a JSON document.
+DB despite the file extension. MegaMUD does NOT read the MDB sources
+at runtime; the .md files are the authoritative store. This script
+extracts every per-monster field visible in MegaMUD's Monster/NPC
+Details dialog into a JSON document.
 
-Fields extracted:
-  Number, Name, Relationship, Priority, FindFirst, DontBackstab,
-  NotHostile, CheckIfAlive
+Works on both **legacy MegaMUD** and **MegaMUD 2.0 Beta** Monsters.md
+files transparently — same record layout, same rel-anchored stat
+block offsets, same flag-bit semantics; the only meaningful difference
+is that 2.0 Beta added the StopToKillIfAble flag (rel-3 & 0x08), which
+older saves leave at 0. No version flag needed — point the script at
+either file and it just works.
 
-See README.md (sibling file) for the reverse-engineered file layout
-and the validation history.
+Fields extracted (with rel-anchored offsets):
+  Header / overlay block (the editable left-pane fields):
+    Number              header                u16 LE
+    Name                header                null-terminated string
+    Relationship        rel+0                 u8 enum
+    Priority            rel-4 upper nibble    u8 enum
+    FindFirst           rel-4 & 0x08          bool
+    DontBackstab        rel-3 & 0x01          bool
+    NotHostile          rel-3 & 0x02          bool
+    CheckIfAlive        rel-3 & 0x04          bool
+    StopToKillIfAble    rel-3 & 0x08          bool  (new flag in MegaMUD 2.0 Beta;
+                                                     packaged .md files don't yet
+                                                     set it for any monster)
+
+  Stat block (rel-anchored static record data; read-only in the UI
+  but still serialised in the .md):
+    MaxHP               rel+0x14              u16 LE
+    Experience          rel+0x6c              u32 BE
+
+See README.md (sibling file) for the reverse-engineered file layout,
+the rel-anchored stat-block discovery, and the validation history.
 
 Usage:
   python3 decode_monsters_md.py <input.md> <output.json>
@@ -132,8 +155,12 @@ def find_rel_byte(data: bytes, name_end: int, record_end: int) -> int | None:
                 pri_enum = data[pos - 4] & 0xF0
                 if pri_enum in PRIORITY_NAMES:
                     return pos
-        # Spell-name reference string (printable ASCII run, null-terminated)
-        if 0x20 <= b <= 0x7E:
+        # Spell-name reference string (printable ASCII run, null-terminated).
+        # Require ≥2 consecutive printable bytes before treating as a string —
+        # older Monsters.md files have lone printable bytes (e.g. 0x40 / '@')
+        # in unused field slots, and a single-byte heuristic would skip past
+        # the real rel byte that follows.
+        if 0x20 <= b <= 0x7E and pos + 1 < len(data) and 0x20 <= data[pos + 1] <= 0x7E:
             sr_end = data.find(b"\x00", pos, record_end)
             if sr_end == -1:
                 return None
@@ -143,12 +170,24 @@ def find_rel_byte(data: bytes, name_end: int, record_end: int) -> int | None:
     return None
 
 
-def extract_overlay(data: bytes, marker: int, name_end: int) -> tuple[int, int, int] | None:
-    """Returns (rel_byte, priority_byte, flags_byte) for one record."""
+def extract_overlay(data: bytes, marker: int, name_end: int) -> tuple[int, int, int, int, int] | None:
+    """Returns (rel_byte, priority_byte, flags_byte, max_hp, experience).
+
+    The first three are the overlay-block values at rel/rel-4/rel-3.
+    The latter two come from the rel-anchored stat block:
+      - MaxHP        u16 LE at rel+0x14
+      - Experience   u32 BE at rel+0x6c  (high-end monsters legitimately
+                     give 16M+; the byte at rel+0x6c carries the high
+                     octet for those)
+    """
     rel_pos = find_rel_byte(data, name_end, marker + 256)
     if rel_pos is None or rel_pos < 4:
         return None
-    return data[rel_pos], data[rel_pos - 4], data[rel_pos - 3]
+    if rel_pos + 0x70 >= len(data):
+        return None
+    max_hp = struct.unpack_from("<H", data, rel_pos + 0x14)[0]
+    exp    = struct.unpack_from(">I", data, rel_pos + 0x6c)[0]
+    return data[rel_pos], data[rel_pos - 4], data[rel_pos - 3], max_hp, exp
 
 
 def decode(data: bytes, emit_defaults: bool = False) -> tuple[list[dict], list[tuple[int, str, str]]]:
@@ -172,7 +211,7 @@ def decode(data: bytes, emit_defaults: bool = False) -> tuple[list[dict], list[t
         if result is None:
             skipped.append((num, name, "extract failed"))
             continue
-        rel_b, pri_b, flg_b = result
+        rel_b, pri_b, flg_b, max_hp, exp = result
         rel_name = RELATIONSHIP_NAMES.get(rel_b)
         if rel_name is None:
             skipped.append((num, name, f"unknown relationship byte 0x{rel_b:02x}"))
@@ -186,7 +225,15 @@ def decode(data: bytes, emit_defaults: bool = False) -> tuple[list[dict], list[t
             "DontBackstab": bool(flg_b & 0x01),
             "NotHostile":   bool(flg_b & 0x02),
             "CheckIfAlive": bool(flg_b & 0x04),
+            "StopToKillIfAble": bool(flg_b & 0x08),
+            "MaxHP":        max_hp,
+            "Experience":   exp,
         }
+        # The overlay-block flags + relationship + priority can all
+        # match the implicit defaults; MaxHP / Experience never do
+        # (every monster has its own values). The "is_default" test
+        # therefore stays scoped to the overlay-block fields only —
+        # otherwise we'd emit every record, defeating the compaction.
         is_default = (
             overlay["Relationship"] == "Enemy"
             and overlay["Priority"] == "Normal"
@@ -194,6 +241,7 @@ def decode(data: bytes, emit_defaults: bool = False) -> tuple[list[dict], list[t
             and not overlay["DontBackstab"]
             and not overlay["NotHostile"]
             and not overlay["CheckIfAlive"]
+            and not overlay["StopToKillIfAble"]
         )
         if emit_defaults or not is_default:
             overlays.append(overlay)
@@ -256,6 +304,12 @@ def main() -> int:
             print(f"DontBackstab set: {sum(o['DontBackstab'] for o in overlays)}")
             print(f"NotHostile set:   {sum(o['NotHostile'] for o in overlays)}")
             print(f"CheckIfAlive set: {sum(o['CheckIfAlive'] for o in overlays)}")
+            print(f"StopToKillIfAble: {sum(o['StopToKillIfAble'] for o in overlays)} "
+                  f"(new flag in MegaMUD 2.0 Beta — packaged files don't set it yet)")
+            hps = [o["MaxHP"] for o in overlays]
+            exps = [o["Experience"] for o in overlays]
+            print(f"MaxHP range:      {min(hps)} – {max(hps)}")
+            print(f"Experience range: {min(exps)} – {max(exps)}")
         if skipped:
             print(f"\nskipped records:")
             for num, name, why in skipped[:10]:

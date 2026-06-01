@@ -19,7 +19,7 @@ human-readable and don't:
 
 | Source file | Script | Status |
 |---|---|---|
-| `Monsters.md` | [`decode_monsters_md.py`](decode_monsters_md.py) | ✅ working — 1099 / 1100 monsters (1 orphan record with empty name skipped) from MegaMMUD v2.0 Beta P1 stock; 13 hand-verified |
+| `Monsters.md` | [`decode_monsters_md.py`](decode_monsters_md.py) | ✅ working — overlay block + MaxHP + Experience + StopToKillIfAble; 1099 / 1100 records from MegaMUD 2.0 Beta P1 stock, 1737 / 1738 from legacy MegaMUD (one orphan empty-name in each); format-agnostic |
 | `Items.md`    | [`decode_items_md.py`](decode_items_md.py)       | ✅ working — 1950 / 1950 items from MegaMMUD v2.0 Beta P1 stock; every UI flag confirmed via single-flag-edit diffs |
 | `Classes.md`  | —                                                | not yet reversed |
 | `Paths.md`    | —                                                | not yet reversed |
@@ -80,19 +80,24 @@ python3 decode_items_md.py \
 
 ### `decode_monsters_md.py` — output schema
 
-Per-monster overlay matching the Monster/NPC Details dialog. Each
-record is a JSON object:
+Per-monster record matching the Monster/NPC Details dialog. Each
+output JSON object carries the overlay-block fields (the editable
+left-pane controls plus the user-set checkboxes) AND the rel-anchored
+stat-block fields the dialog displays as read-only "Other Info":
 
 ```json
 {
-  "Number":       113,
-  "Name":         "banshee",
-  "Relationship": "Enemy",
-  "Priority":     "First",
-  "FindFirst":    false,
-  "DontBackstab": false,
-  "NotHostile":   false,
-  "CheckIfAlive": true
+  "Number":           2,
+  "Name":             "lashworm",
+  "Relationship":     "Enemy",
+  "Priority":         "Normal",
+  "FindFirst":        false,
+  "DontBackstab":     false,
+  "NotHostile":       false,
+  "CheckIfAlive":     false,
+  "StopToKillIfAble": true,
+  "MaxHP":            15,
+  "Experience":       12
 }
 ```
 
@@ -106,12 +111,13 @@ record is a JSON object:
 | `DontBackstab` | bool | "Don't backstab" Options checkbox |
 | `NotHostile` | bool | "Not hostile" Options checkbox |
 | `CheckIfAlive` | bool | "Check if alive" Options checkbox |
+| `StopToKillIfAble` | bool | "Stop to kill if able" Options checkbox (MegaMUD 2.0 Beta+ — confirmed via single-flag edit-diff on lashworm; older files / unmodified beta files leave this 0) |
+| `MaxHP` | int | Maximum HP — `u16 LE` at `rel + 0x14` |
+| `Experience` | int | Experience awarded on kill — `u32 BE` at `rel + 0x6c` (high-end monsters legitimately give 16M+; the byte at rel+0x6c carries the high octet for those) |
 
-The "Stop to kill if able" Options checkbox is specific to the
-MegaMUD 2.0 beta UI — its bit position in the binary is unknown
-because no stock monster ships with it set, so there's no positive
-witness to diff against. The checkbox exists in the dialog; the
-decoder just doesn't emit it.
+The decoder works transparently on both legacy MegaMUD and MegaMUD 2.0
+Beta `Monsters.md` files — same record layout, same rel-anchored stat
+block offsets, same flag-bit semantics. No version flag needed.
 
 ### `decode_items_md.py` — output schema
 
@@ -148,20 +154,18 @@ Per-item overlay matching the Game Item Details dialog. Each record:
 | `LoyalItem` | bool | "Loyal item" — lives in a separate extended byte at record offset `+0x70`, not the main Options word |
 | `CanUseToBackstab` | bool | "Can use to backstab" — exposed for completeness (combat code consumes this to filter BS-eligible weapons) |
 
-### "Auto-equip" / "Stop to kill if able" — beta-only checkboxes, bit positions unknown
+### "Auto-equip" — beta-only checkbox, bit position still unknown
 
-Two checkboxes specific to the MegaMUD 2.0 beta UI aren't emitted by
-either decoder:
+The **`Auto-equip`** checkbox appears on items in the MegaMUD 2.0 Beta
+UI (between Auto-discard and Auto-find) but no packaged item record
+ships with it pre-set, so there's no positive witness yet to identify
+the bit position via diff. Once a witness exists (a stock record with
+it on, or a single-toggle edit), the bit can be added to
+`decode_items_md.py` without changing the rest of the code.
 
-- **`Auto-equip`** appears on items (between Auto-discard and Auto-find).
-- **`Stop to kill if able`** appears on monsters (5th option in the
-  Options box).
-
-Both are present in the beta dialog but no stock record ships with
-either flag pre-set, so there's no positive witness to identify the
-bit positions via diff. Once a witness exists (a stock record with
-the flag on, or a single-toggle edit), the bits can be added to the
-respective decoder without changing the rest of the code.
+The corresponding **`Stop to kill if able`** monster checkbox **has
+been identified** — see the `decode_monsters_md.py` schema above and
+the Monsters.md overlay-block table below.
 
 ## File format reverse-engineered
 
@@ -218,7 +222,7 @@ The overlay fields sit at fixed offsets relative to the **rel byte**
 | Offset (relative to rel byte) | Field | Bits |
 |---|---|---|
 | `rel − 4` | priority byte | upper nibble: `0x10` Last, `0x20` Low, `0x40` High, `0x80` First, `0x00` Normal. Bit `0x08` = **FindFirst**. |
-| `rel − 3` | flags byte | `0x01` **DontBackstab**, `0x02` **NotHostile**, `0x04` **CheckIfAlive**. |
+| `rel − 3` | flags byte | `0x01` **DontBackstab**, `0x02` **NotHostile**, `0x04` **CheckIfAlive**, `0x08` **StopToKillIfAble** (MegaMUD 2.0 Beta+). |
 | `rel` | relationship byte | `0x01` Unknown, `0x02` Friend, `0x03` Avoid, `0x04` Enemy, `0x05` Flee, `0x06` Hangup. |
 
 Anchoring algorithm: scan forward past the name + spell-ref strings;
@@ -230,12 +234,37 @@ classes — the `CheckIfAlive` byte (also `0x04` when set) and the
 `DontBackstab` byte (`0x01`, same as the Unknown rel value) sit too
 close to non-zero data to satisfy it.
 
-In the MegaMMUD v2.0 Beta P1 stock file the distribution is:
+**Spell-name reference run detection requires ≥2 consecutive printable
+bytes** to count as a string-skip. A single-byte `0x40` / `0x4e` / etc.
+at rel-1 in legacy MegaMUD files is data, not a string — being strict
+about run length is what makes the same decoder work on both legacy
+and 2.0 Beta files without a version flag.
+
+### Monsters.md stat block (rel-anchored, read-only "Other Info")
+
+The static record data — what the dialog renders in its right-pane
+"Other Info" box — lives at fixed offsets after the rel byte:
+
+| Offset (relative to rel byte) | Field | Type | Notes |
+|---|---|---|---|
+| `rel + 0x14` | MaxHP | u16 LE | Editable in the dialog; verified across 4+ stock monsters. |
+| `rel + 0x6c` | Experience | u32 **BE** | Editable in the dialog. Big-endian inside an otherwise LE file — unusual but consistent. Top-tier monsters legitimately give 16M+ (Kai Master, dread planewalker, etc.). |
+
+The dialog's other right-pane fields (Energy, MagicRes, Accuracy,
+EnslaveLevel, Sex, Alignment, Type, Group, Animal, Attacks) all live
+in this same rel-anchored block at observed-stable offsets between
+`rel + 0x16` and `rel + 0x50`-ish, but aren't extracted by the current
+decoder — MegaMUD treats them as read-only display data, so they're
+unlikely to ever differ from the realm's source data and there's no
+consumer that needs them. Trivial to add if a use case appears.
+
+In the MegaMMUD v2.0 Beta P1 stock file the overlay-block distribution is:
 
 - DontBackstab: 1 monster (#66 moaning spirit)
 - NotHostile: 1 monster (#848 ivory golem)
 - CheckIfAlive: 140 monsters (#113 banshee, #818 hanging tree, many boss-tier mobs)
 - FindFirst: 180 monsters
+- StopToKillIfAble: 0 monsters (brand-new flag in 2.0 Beta; no packaged record uses it yet)
 
 ### Items.md overlay block (fixed-offset)
 
@@ -357,14 +386,10 @@ Auto-discard; golden idol #1281 → Auto-find; yellow parchment deed
 
 ## Validation methodology — Monsters.md
 
-The monsters decoder was validated against a different methodology
-since most monster overlay fields were already populated in the stock
-binary (no edit-diffs needed for most flags):
-
-The bit assignments were pinned down by comparing the binary output
-of the decoder against the MegaMUD `Monster/NPC Details` dialog for
-monsters with known flag combinations at the `Use: installed defaults`
-tier. Full validation table:
+The overlay-block bit assignments were initially pinned down by
+comparing the binary output of the decoder against the MegaMUD
+`Monster/NPC Details` dialog for monsters with known flag combinations
+at the `Use: installed defaults` tier:
 
 | # | Monster | Priority | FF | NH | DB | CIA | Notes |
 |---|---|---|---|---|---|---|---|
@@ -382,6 +407,24 @@ tier. Full validation table:
 | 1091| jeweled viper            | Last   | - | - | - | - | pins Last (0x10), the rarest priority |
 
 All 12 cross-checks pass against the rel-anchored extractor.
+
+**Single-flag edit-diffs** (same methodology as Items.md) then
+confirmed the rel-anchored stat-block additions:
+
+| Edit | Before | After | Delta | Conclusion |
+|---|---|---|---|---|
+| Lashworm `Stop to kill if able` ON | flags=0x00 | flags=0x08 | rel-3 bit `0x08` | **StopToKillIfAble** (new in MegaMUD 2.0 Beta) |
+| Lashworm baseline read | — | MaxHP=15, Exp=12 | rel+0x14 u16 LE / rel+0x6c u32 BE | **MaxHP** / **Experience** field offsets confirmed against the dialog values |
+
+**Cross-version validation**: the same decoder runs cleanly against a
+legacy MegaMUD `MONSTERS.md` (827 KB, 1738 records, originally
+parsed at only 80% accuracy with the initial heuristic) once the
+spell-name-reference detection was tightened to require ≥2 consecutive
+printable bytes. Both legacy and beta files now decode at 99.9%
+accuracy (skipping only the known empty-name orphan at #84). Lashworm
+in the legacy file: `Enemy / Normal / DontBackstab / MaxHP=15 / Exp=12`
+— stat-block values identical to the beta file (as expected, since
+they're the same realm data).
 
 ## Combined findings — what's the same across both files
 
@@ -428,13 +471,19 @@ field offsets are known — no anchor-scanning needed.
 - Priority byte bit `0x02` — set on exactly one record in the stock
   file (#812 `sdfsdfsfs`, a placeholder/test record) with no visible
   UI flag. Treated as deprecated/internal; ignored.
-- Flags byte bit `0x08` — never set in stock. Possibly reserved.
-- The 16-byte file header's exact contents.
+- The 16-byte file header's exact contents — partly identified as a
+  save-counter / timestamp region (bytes 0x06–0x18 change on every
+  MegaMUD save with no other record-level edits) but the precise
+  layout isn't known.
 - The marker-byte variations (`0xdb` / `0xdc` / `0xdd`).
 - Page-level structure: how the page header (if any) decides which
   slots are live.
-- "Stop to kill if able" Options checkbox (beta UI only) — bit
-  position unknown; no stock witnesses.
+- The rel-anchored stat-block offsets for the dialog's read-only
+  "Other Info" fields (Energy, MagicRes, Accuracy, EnslaveLevel, Sex,
+  Alignment, Type, Group, Animal, Attacks) — observed-stable values
+  exist between `rel + 0x16` and `rel + 0x50`-ish but precise field
+  positions haven't been pinned down. Easy edit-diff work for whoever
+  wants them.
 
 ## Things NOT yet figured out (Items.md)
 
@@ -451,9 +500,13 @@ field offsets are known — no anchor-scanning needed.
 
 ## Tested against
 
-- **MegaMMUD v2.0 Beta P1 (Stock)** — `Default/Monsters.md`
+- **MegaMUD 2.0 Beta P1 (Stock)** — `Default/Monsters.md`
   (1099 / 1100 records, 1 orphan with empty name skipped) and
   `Default/Items.md` (1950 / 1950 records).
+- **MegaMUD 2.0 Beta P1 (Paradigm)** — same versions of both files.
+- **Legacy MegaMUD `MONSTERS.md`** — 1737 / 1738 records (one orphan
+  empty-name at #84, same in every variant), confirms the decoder is
+  format-agnostic across MegaMUD versions.
 
 If you find a MegaMUD distribution where these decoders misread
 records, please open an issue with the offending record's WCC No,

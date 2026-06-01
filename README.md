@@ -19,7 +19,7 @@ human-readable and don't:
 
 | Source file | Script | Status |
 |---|---|---|
-| `Monsters.md` | [`decode_monsters_md.py`](decode_monsters_md.py) | ✅ working — overlay block + MaxHP + Experience + StopToKillIfAble; 1099 / 1100 records from MegaMUD 2.0 Beta P1 stock, 1737 / 1738 from legacy MegaMUD (one orphan empty-name in each); format-agnostic |
+| `Monsters.md` | [`decode_monsters_md.py`](decode_monsters_md.py) | ✅ working — full extraction: overlay block + 17 read-only "Other Info" fields + 5-slot Abilities array with human-readable code names; 1099 / 1100 records from MegaMUD 2.0 Beta P1 stock, 1859 / 1860 from paradigm, 1737 / 1738 from legacy MegaMUD (one empty-name orphan in each); format-agnostic |
 | `Items.md`    | [`decode_items_md.py`](decode_items_md.py)       | ✅ working — 1950 / 1950 items from MegaMMUD v2.0 Beta P1 stock; every UI flag confirmed via single-flag-edit diffs |
 | `Classes.md`  | —                                                | not yet reversed |
 | `Paths.md`    | —                                                | not yet reversed |
@@ -82,42 +82,90 @@ python3 decode_items_md.py \
 
 Per-monster record matching the Monster/NPC Details dialog. Each
 output JSON object carries the overlay-block fields (the editable
-left-pane controls plus the user-set checkboxes) AND the rel-anchored
-stat-block fields the dialog displays as read-only "Other Info":
+left-pane controls), the read-only "Other Info" stat block, and a
+decoded **Abilities** array surfacing the dialog's ability-based
+rows (NonLiving / Resist-Cold / Magical / SpellImmu / SeeHidden /
+Resist-Fire / etc.):
 
 ```json
 {
-  "Number":           2,
-  "Name":             "lashworm",
+  "Number":           818,
+  "Name":             "hanging tree",
   "Relationship":     "Enemy",
-  "Priority":         "Normal",
+  "Priority":         "High",
   "FindFirst":        false,
   "DontBackstab":     false,
   "NotHostile":       false,
-  "CheckIfAlive":     false,
-  "StopToKillIfAble": true,
-  "MaxHP":            15,
-  "Experience":       12
+  "CheckIfAlive":     true,
+  "StopToKillIfAble": false,
+  "Level":            2000,
+  "MaxHP":            7200,
+  "Energy":           1000,
+  "MagicRes":         130,
+  "FollowPercent":    100,
+  "ArmourClass":      0,
+  "DamageResist":     80,
+  "EnslaveLevel":     9999,
+  "Type":             "Stationary",
+  "Alignment":        "Chaotic Evil",
+  "GameLimit":        1,
+  "RegenTime":        22,
+  "Weapon":           0,
+  "Experience":       6500000,
+  "DeathSpell":       1122,
+  "CreateSpell":      0,
+  "Undead":           "Yes",
+  "Abilities": [
+    { "Code":  28, "Name": "Magical",     "Value":   5 },
+    { "Code": 139, "Name": "SpellImmu",   "Value":  35 },
+    { "Code": 109, "Name": "NonLiving",   "Value":   0 },
+    { "Code":  57, "Name": "SeeHidden",   "Value":   0 },
+    { "Code":   5, "Name": "Resist-Fire", "Value": -50 }
+  ]
 }
 ```
 
-| Field | Type | Values |
+| Field | Type | Notes |
 |---|---|---|
-| `Number` | int | MegaMUD monster ID (1..N) |
+| `Number` | int | MegaMUD monster ID (= dialog's WCC No) |
 | `Name` | string | Display name |
+| **Overlay block** *(editable left-pane fields)* | | |
 | `Relationship` | string | `Unknown` / `Friend` / `Avoid` / `Enemy` / `Flee` / `Hangup` |
 | `Priority` | string | `First` / `High` / `Normal` / `Low` / `Last` |
 | `FindFirst` | bool | "Find first" Options checkbox |
 | `DontBackstab` | bool | "Don't backstab" Options checkbox |
 | `NotHostile` | bool | "Not hostile" Options checkbox |
 | `CheckIfAlive` | bool | "Check if alive" Options checkbox |
-| `StopToKillIfAble` | bool | "Stop to kill if able" Options checkbox (MegaMUD 2.0 Beta+ — confirmed via single-flag edit-diff on lashworm; older files / unmodified beta files leave this 0) |
-| `MaxHP` | int | Maximum HP — `u16 LE` at `rel + 0x14` |
-| `Experience` | int | Experience awarded on kill — `u32 BE` at `rel + 0x6c` (high-end monsters legitimately give 16M+; the byte at rel+0x6c carries the high octet for those) |
+| `StopToKillIfAble` | bool | "Stop to kill if able" Options checkbox (new in MegaMUD 2.0 Beta — older files leave this 0) |
+| **Stat block** *(read-only "Other Info" pane — all `rel`-anchored, see file-format section below)* | | |
+| `Sex` | string | `It` / `Male` / `Female` |
+| `Level` | int | Dialog "Level" — same byte as the MDB's `HPRegen` field |
+| `MaxHP` | int | "Max. HP's" |
+| `Energy` | int | Dialog "Energy" |
+| `MagicRes` | int | Dialog "Magic Res" |
+| `FollowPercent` | int | "Follow %" (used by Type=Follower roles) |
+| `ArmourClass` | int | The first number in the dialog's `AC: X/Y` row |
+| `DamageResist` | int | The second number in `AC: X/Y` |
+| `EnslaveLevel` | int | "Enslave Level" (= MDB's `CharmLVL` field) |
+| `Type` | string | `Solo` / `Leader` / `Follower` / `Stationary` |
+| `Alignment` | string | `Good` / `Evil` / `Chaotic Evil` / `Neutral` / `Lawful Good` / `Neutral Evil` / `Lawful Evil` |
+| `GameLimit` | int | "Game max" — concurrent-instance cap |
+| `RegenTime` | int | "Regen" value (display unit varies — MegaMUD renders as hours / days based on magnitude) |
+| `Weapon` | int | Weapon item Number (0 = none / unarmed) |
+| `Experience` | int | "Experience" the dialog shows — the full multiplied total per kill |
+| `DeathSpell` | int | Spell Number cast on the monster's death (0 = none) |
+| `CreateSpell` | int | Spell Number cast on the monster's spawn (0 = none) |
+| `Undead` | string | `Yes` / `No` (any non-zero byte = Yes; 1 and 255 both appear in stock as Yes sentinels) |
+| **Abilities** *(synthesised dialog rows)* | | |
+| `Abilities[]` | array | Up to 5 `{ Code, Name, Value }` triples. Empty slots (code 0) are omitted. Surfaces dialog rows like NonLiving / Resist-Cold / Resist-Fire / SpellImmu / Magical / SeeHidden / Crits / Slay / Quickness / etc. — see ABILITY_NAMES in the script for the full code table. |
+| **Multi-record sections** | | |
+| `Attacks[]` | array | Up to 5 `{ Min, Max, Energy, [HitSpell], [Percent] }` slots. Each surfaces as a dialog "Attacks:" or "Casts:" row (MegaMUD splits by AttType — Normal → Attacks, Spell → Casts — but AttType isn't stored in the .md). `HitSpell` + `Percent` only emitted for slots 0–2. Empty slots (Min == Max == Energy == 0) are omitted. |
+| `MidSpells[]` | array | Up to 5 `{ Spell, Percent, Level }` slots — the engine's mid-round / between-rounds spell procs. `Spell` is a Spells.md Number. Empty slots (Spell == 0 or 0xFFFF) are omitted. |
+| `DropItems[]` | array | Up to 5 `{ Item, Percent }` slots. The MDB schema exposes 10 drop fields but only 5 are serialised in the .md (slots 5–9 are always zero and unstored). Empty slots (Item == 0) are omitted. |
 
-The decoder works transparently on both legacy MegaMUD and MegaMUD 2.0
-Beta `Monsters.md` files — same record layout, same rel-anchored stat
-block offsets, same flag-bit semantics. No version flag needed.
+The decoder works transparently on **both legacy MegaMUD and MegaMUD
+2.0 Beta** `Monsters.md` files — same record layout, same rel-anchored
+stat-block offsets, same flag-bit semantics. No version flag needed.
 
 ### `decode_items_md.py` — output schema
 
@@ -243,20 +291,88 @@ and 2.0 Beta files without a version flag.
 ### Monsters.md stat block (rel-anchored, read-only "Other Info")
 
 The static record data — what the dialog renders in its right-pane
-"Other Info" box — lives at fixed offsets after the rel byte:
+"Other Info" box — lives at fixed offsets after the rel byte. Offsets
+were pinned down by **cross-referencing every record's bytes against
+an exported `Monsters.json` representation of the MDB tables** (any tool that converts the source MDB to per-table JSON works as the side-table for offset discovery).
+For each candidate offset/encoding, we test how many of the 1100 stock
+records read a value matching the JSON twin's field — 100% match means
+the offset is right. This methodology surfaced 17 stable fields in one
+sweep without needing any single-flag edit-diff testing.
 
 | Offset (relative to rel byte) | Field | Type | Notes |
 |---|---|---|---|
-| `rel + 0x14` | MaxHP | u16 LE | Editable in the dialog; verified across 4+ stock monsters. |
-| `rel + 0x6c` | Experience | u32 **BE** | Editable in the dialog. Big-endian inside an otherwise LE file — unusual but consistent. Top-tier monsters legitimately give 16M+ (Kai Master, dread planewalker, etc.). |
+| `rel + 0x0f` | Sex | u8 enum | `0=It, 1=Male, 2=Female`. Pinned via 3-way dialog cross-check (giant rat / drunken brawler / barmaid). |
+| `rel + 0x10` | Level | u16 LE | Dialog "Level". Same byte as the MDB's `HPRegen` field — MegaMUD treats monster level and HP-regen-per-tick as the same value. |
+| `rel + 0x14` | MaxHP | u16 LE | "Max. HP's" |
+| `rel + 0x16` | Energy | u16 LE | "Energy" |
+| `rel + 0x18` | MagicRes | u16 LE | "Magic Res" |
+| `rel + 0x1a` | FollowPercent | u8 | "Follow %" (only used when Type=Follower) |
+| `rel + 0x1c` | ArmourClass | u16 LE | First number in dialog's `AC: X/Y` |
+| `rel + 0x1e` | DamageResist | u16 LE | Second number in `AC: X/Y` |
+| `rel + 0x20` | EnslaveLevel | u16 LE | "Enslave Level" (= MDB `CharmLVL`) |
+| `rel + 0x24` | Type | u8 enum | `0=Solo, 1=Leader, 2=Follower, 3=Stationary` |
+| `rel + 0x25` | Alignment | u8 enum | `0=Good, 1=Evil, 2=Chaotic Evil, 3=Neutral, 4=Lawful Good, 5=Neutral Evil, 6=Lawful Evil` |
+| `rel + 0x26` | GameLimit | u8 | "Game max" — instance cap |
+| `rel + 0x28` | RegenTime | u8 | "Regen" — MegaMUD renders as hours / days based on magnitude |
+| `rel + 0x47` | Abil-0 code | u16 LE | Ability code 0 |
+| `rel + 0x49` | Abil-1 code | u16 LE | Ability code 1 |
+| `rel + 0x4b` | Abil-2 code | u16 LE | Ability code 2 |
+| `rel + 0x4d` | Abil-3 code | u16 LE | Ability code 3 |
+| `rel + 0x4f` | Abil-4 code | u16 LE | Ability code 4 |
+| `rel + 0x51` | AbilVal-0 | i16 LE | Ability 0 value (signed — Resist-Fire can be −50) |
+| `rel + 0x53` | AbilVal-1 | i16 LE | |
+| `rel + 0x55` | AbilVal-2 | i16 LE | |
+| `rel + 0x57` | AbilVal-3 | i16 LE | |
+| `rel + 0x59` | AbilVal-4 | i16 LE | |
+| `rel + 0x5b` | Weapon | u16 LE | Item Number (0 = unarmed) |
+| `rel + 0x5d..0x65` | MidSpell-0..4 (slot Numbers) | 5 × u16 LE, stride 2 | Spell Number; 0 / 0xFFFF = unused |
+| `rel + 0x6f` | Experience | u32 LE | Total exp per kill (= dialog value verbatim — 5/5 dialog matches: lashworm=12, Kai Master=450000, dwarven cleric=150, Zanthus the Lich=250000000, Tyrannosaur=649935000) |
+| `rel + 0x73..0x77` | MidSpell%-0..4 | 5 × u8 | Cast chance |
+| `rel + 0x7d..0x85` | AttMin-0..4 | 5 × u16 LE, stride 2 | Attack min damage |
+| `rel + 0x87..0x8f` | AttMax-0..4 | 5 × u16 LE, stride 2 | Attack max damage |
+| `rel + 0x91..0x99` | AttEnergy-0..4 | 5 × u16 LE, stride 2 | Attack energy cost |
+| `rel + 0x9b` | DeathSpell | u16 LE | Spell Number cast on death |
+| `rel + 0x9d` | CreateSpell | u16 LE | Spell Number cast on spawn |
+| `rel + 0x9f..0xa3` | MidSpellLVL-0..4 | 5 × u8 | Cast level |
+| `rel + 0xa4` | Undead | u8 | Non-zero = Yes (1 standard; 255 sentinel) |
+| `rel + 0xa5..0xa9` | AttHitSpell-0..2 | 3 × u16 LE, stride 2 | Spell-on-hit (slots 0–2 only) |
+| `rel + 0xab..0xad` | Att%-0..2 | 3 × u8 | Per-attack use chance (slots 0–2 only) |
+| `rel + 0x2e..0x36` | DropItem-0..4 | 5 × u16 LE, stride 2 | Loot item Number |
+| `rel + 0x38..0x3c` | DropItem%-0..4 | 5 × u8 | Loot drop chance |
 
-The dialog's other right-pane fields (Energy, MagicRes, Accuracy,
-EnslaveLevel, Sex, Alignment, Type, Group, Animal, Attacks) all live
-in this same rel-anchored block at observed-stable offsets between
-`rel + 0x16` and `rel + 0x50`-ish, but aren't extracted by the current
-decoder — MegaMUD treats them as read-only display data, so they're
-unlikely to ever differ from the realm's source data and there's no
-consumer that needs them. Trivial to add if a use case appears.
+**Ability decoding**: each Abil-N code looks up into MajorMUD's
+canonical ability-name table (mirrored verbatim in the decoder script
+as `ABILITY_NAMES`). That's how the dialog's `Resist-Cold: +100` /
+`SpellImmu: 35` / `NonLiving: 0` rows are synthesised — they're
+ability slots, not separate stat fields. Only 5 slots are stored in
+`Monsters.md` (the MDB has 10 fields, but slots 5–9 are always zero
+and aren't serialised).
+
+**Fields that don't exist in `Monsters.md` at all** (verified absent
+via exhaustive string + numeric searches across the full file):
+
+- **AttName-N** (the "slashes you" / "bites you" attack strings) —
+  searched the entire 541 KB binary for `bites` / `smashes` /
+  `slashes` / `claws` / `rips you` / `punches`: **zero occurrences**.
+  The only printable strings in the file are monster names. AttName
+  strings must live in a separate MegaMUD file (likely `messages.md`
+  or equivalent) or come from the source MDB.
+- **AttType-N** (Normal / Spell / Rob enum) and **AttAcc-N**
+  (per-attack accuracy) — appear in the MDB export but don't match
+  anywhere in the .md at any offset/encoding combo. Likely computed
+  / derived at display time from other fields and not stored. Without
+  AttType, downstream tools can't reliably split the Attacks array
+  into the dialog's "Attacks:" vs "Casts:" sections the way MegaMUD
+  does (the dialog branches on AttType=Spell to pick the Casts label).
+- **Group** (dialog string like "Slums, Sewers" / "Graveyard Crypt")
+  and **Location** (`Map X, Room Y`) — derived from room / lair table
+  joins at display time, not stored per-monster.
+- **DeathSpell-as-text** — the `DeathSpell` Number is extracted, but
+  rendering the spell name would need a `Spells.md` decoder.
+
+Per the project's scope (decode what `Monsters.md` stores), nothing
+above is a gap in the decoder — they're either elsewhere on disk or
+computed at runtime.
 
 In the MegaMMUD v2.0 Beta P1 stock file the overlay-block distribution is:
 
@@ -414,7 +530,30 @@ confirmed the rel-anchored stat-block additions:
 | Edit | Before | After | Delta | Conclusion |
 |---|---|---|---|---|
 | Lashworm `Stop to kill if able` ON | flags=0x00 | flags=0x08 | rel-3 bit `0x08` | **StopToKillIfAble** (new in MegaMUD 2.0 Beta) |
-| Lashworm baseline read | — | MaxHP=15, Exp=12 | rel+0x14 u16 LE / rel+0x6c u32 BE | **MaxHP** / **Experience** field offsets confirmed against the dialog values |
+
+**JSON cross-reference discovery** (much faster than per-field
+edit-diffs): for the read-only "Other Info" fields, we scan every
+candidate offset/encoding combo and count how many of the 1100
+records read a value matching the same field in an exported
+`Monsters.json`. 17 stable fields were identified in a single
+sweep at 100% match (Level / MaxHP / Energy / MagicRes /
+FollowPercent / ArmourClass / DamageResist / EnslaveLevel / Type /
+Alignment / GameLimit / RegenTime / Weapon / DeathSpell /
+CreateSpell / Undead, plus the 5 Abil-N + AbilVal-N slot pairs).
+
+**Dialog-shown verification** (closes the loop on Experience):
+
+| Monster | Dialog shows | Decoder reads | Match |
+|---|---|---|---|
+| #2 lashworm | Exp 12 | 12 | ✓ |
+| #448 Kai Master | Exp 450,000 | 450,000 | ✓ |
+| #417 dwarven cleric | Exp 150 | 150 | ✓ |
+| #215 Zanthus the Lich | Exp 250,000,000 | 250,000,000 | ✓ |
+| #514 Tyrannosaur | Exp 649,935,000 | 649,935,000 | ✓ |
+
+(The earlier `u32 BE at rel+0x6c` interpretation happened to match
+small-Exp monsters by coincidence — for high-end values it was
+~100,000× wrong. `u32 LE at rel+0x6f` is the actual encoding.)
 
 **Cross-version validation**: the same decoder runs cleanly against a
 legacy MegaMUD `MONSTERS.md` (827 KB, 1738 records, originally
@@ -422,8 +561,9 @@ parsed at only 80% accuracy with the initial heuristic) once the
 spell-name-reference detection was tightened to require ≥2 consecutive
 printable bytes. Both legacy and beta files now decode at 99.9%
 accuracy (skipping only the known empty-name orphan at #84). Lashworm
-in the legacy file: `Enemy / Normal / DontBackstab / MaxHP=15 / Exp=12`
-— stat-block values identical to the beta file (as expected, since
+in the legacy file: `Enemy / Normal / DontBackstab / Level=1 / MaxHP=15
+/ Exp=12 / Undead=No / Type=Follower / Alignment=Chaotic Evil` —
+stat-block values identical to the beta file (as expected, since
 they're the same realm data).
 
 ## Combined findings — what's the same across both files
@@ -468,6 +608,20 @@ field offsets are known — no anchor-scanning needed.
 
 ## Things NOT yet figured out (Monsters.md)
 
+- **Group** — dialog string (e.g. "Slums, Sewers" / "Graveyard Crypt").
+  Likely derived from room/lair table joins, not stored per-monster.
+- **Death spell rendered as text** — `DeathSpell` field is extracted
+  as a Number; the dialog labels it with the spell's name (e.g. "tree"
+  for hanging tree). Resolution would require a `Spells.md` decoder.
+- **Location** — dialog "Map X, Room Y" — derived from room
+  population data, not stored in `Monsters.md`.
+- **Multi-record sections**: the dialog shows multiple `Attacks:` rows
+  (5 slots in the MDB schema: `Att-0` through `Att-4`, each with
+  type/min/max/acc/percent/energy/hitspell) and multiple `Casts:` rows
+  (5 slots: `MidSpell-0..4`). Layout sub-pattern still TBD — likely
+  rel-anchored at some offset past the Abilities block.
+- **DropItems** — 10 item-Number slots with drop percentages, not yet
+  decoded.
 - Priority byte bit `0x02` — set on exactly one record in the stock
   file (#812 `sdfsdfsfs`, a placeholder/test record) with no visible
   UI flag. Treated as deprecated/internal; ignored.
@@ -478,12 +632,6 @@ field offsets are known — no anchor-scanning needed.
 - The marker-byte variations (`0xdb` / `0xdc` / `0xdd`).
 - Page-level structure: how the page header (if any) decides which
   slots are live.
-- The rel-anchored stat-block offsets for the dialog's read-only
-  "Other Info" fields (Energy, MagicRes, Accuracy, EnslaveLevel, Sex,
-  Alignment, Type, Group, Animal, Attacks) — observed-stable values
-  exist between `rel + 0x16` and `rel + 0x50`-ish but precise field
-  positions haven't been pinned down. Easy edit-diff work for whoever
-  wants them.
 
 ## Things NOT yet figured out (Items.md)
 

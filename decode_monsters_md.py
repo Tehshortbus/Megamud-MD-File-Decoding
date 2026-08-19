@@ -136,6 +136,7 @@ License: public domain / unlicense — do whatever.
 """
 import argparse
 import json
+import os
 import re
 import struct
 import sys
@@ -564,6 +565,73 @@ def decode(data: bytes, emit_defaults: bool = False) -> tuple[list[dict], list[t
     return overlays, skipped
 
 
+def load_spell_names(path: str) -> dict[int, str]:
+    """Build {spell Number: Name} from a Spells.md or a decoded spells.json.
+
+    Accepts either form so you can point at the raw game file or at the
+    output of decode_spells_md.py, whichever you have to hand.
+    """
+    with open(path, "rb") as f:
+        magic = f.read(4)
+
+    if magic == b"MDB2":
+        # Reuse the sibling decoder's scanner rather than duplicating the
+        # Spells.md record layout here.
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        try:
+            import decode_spells_md as ds
+        except ImportError:
+            raise SystemExit(
+                "error: --spells was given a Spells.md file but "
+                "decode_spells_md.py is not next to this script"
+            )
+        with open(path, "rb") as f:
+            data = f.read()
+        return {
+            num: ds._string(payload, ds.OFF_NAME, 30)
+            for num, payload in ds.scan_records(data).items()
+        }
+
+    with open(path) as f:
+        rows = json.load(f)
+    return {r["Number"]: r["Name"] for r in rows}
+
+
+def spell_label(number: int, names: dict[int, str]) -> str:
+    """Render a spell reference as "name (number)".
+
+    Unresolvable Numbers still surface their id so nothing is silently
+    dropped — Monsters.md references spells that a trimmed Spells.md may
+    not carry.
+    """
+    name = names.get(number)
+    return f"{name} ({number})" if name else f"unknown ({number})"
+
+
+def annotate_spell_names(overlays: list[dict], names: dict[int, str]) -> int:
+    """Add readable labels to every spell-Number reference. Returns count.
+
+    Touches DeathSpell / CreateSpell, each MidSpells slot, and the
+    HitSpell on each Attacks slot — all four are Spells.md Numbers.
+    """
+    resolved = 0
+    for o in overlays:
+        for key in ("DeathSpell", "CreateSpell"):
+            num = o.get(key)
+            if num:
+                o[f"{key}Label"] = spell_label(num, names)
+                resolved += num in names
+        for slot in o.get("MidSpells", []):
+            if slot.get("Spell"):
+                slot["SpellLabel"] = spell_label(slot["Spell"], names)
+                resolved += slot["Spell"] in names
+        for slot in o.get("Attacks", []):
+            if slot.get("HitSpell"):
+                slot["HitSpellLabel"] = spell_label(slot["HitSpell"], names)
+                resolved += slot["HitSpell"] in names
+    return resolved
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description="Decode MegaMUD Monsters.md to JSON.",
@@ -575,6 +643,13 @@ def main() -> int:
         "--emit-defaults",
         action="store_true",
         help="Emit every monster (default omits records that match Enemy/Normal/no-flags defaults)",
+    )
+    p.add_argument(
+        "--spells",
+        metavar="PATH",
+        help="Path to Spells.md (or a decode_spells_md.py JSON). Resolves "
+             "DeathSpell / CreateSpell / MidSpells / Attacks[].HitSpell "
+             'into readable "name (number)" labels.',
     )
     p.add_argument(
         "--quiet",
@@ -600,6 +675,15 @@ def main() -> int:
 
     overlays, skipped = decode(data, emit_defaults=args.emit_defaults)
 
+    spell_names: dict[int, str] = {}
+    if args.spells:
+        try:
+            spell_names = load_spell_names(args.spells)
+        except OSError as e:
+            print(f"error: cannot read {args.spells!r}: {e}", file=sys.stderr)
+            return 1
+        annotate_spell_names(overlays, spell_names)
+
     try:
         with open(args.output, "w") as f:
             json.dump(overlays, f, indent=2)
@@ -611,6 +695,19 @@ def main() -> int:
         print(f"input:    {args.input}")
         print(f"output:   {args.output}")
         print(f"records:  {len(overlays)} emitted, {len(skipped)} skipped")
+        if args.spells:
+            refs = unresolved = 0
+            for o in overlays:
+                nums = [o.get("DeathSpell"), o.get("CreateSpell")]
+                nums += [s["Spell"] for s in o.get("MidSpells", [])]
+                nums += [s.get("HitSpell") for s in o.get("Attacks", [])]
+                for n in nums:
+                    if n:
+                        refs += 1
+                        unresolved += n not in spell_names
+            print(f"spells:   {len(spell_names)} names loaded from {args.spells}")
+            print(f"          {refs} spell references, {refs - unresolved} resolved, "
+                  f"{unresolved} unknown")
         if overlays:
             rels = Counter(o["Relationship"] for o in overlays)
             pris = Counter(o["Priority"] for o in overlays)

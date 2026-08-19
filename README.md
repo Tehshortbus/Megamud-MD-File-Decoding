@@ -21,10 +21,10 @@ human-readable and don't:
 |---|---|---|
 | `Monsters.md` | [`decode_monsters_md.py`](decode_monsters_md.py) | ✅ working — full extraction: overlay block + 17 read-only "Other Info" fields + 5-slot Abilities array with human-readable code names; 1099 / 1100 records from MegaMUD 2.0 Beta P1 stock, 1859 / 1860 from paradigm, 1737 / 1738 from legacy MegaMUD (one empty-name orphan in each); format-agnostic |
 | `Items.md`    | [`decode_items_md.py`](decode_items_md.py)       | ✅ working — 1950 / 1950 items from MegaMMUD v2.0 Beta P1 stock; every UI flag confirmed via single-flag-edit diffs |
+| `Spells.md`   | [`decode_spells_md.py`](decode_spells_md.py)     | ✅ working — full extraction: every Spell Details dialog field, 10-slot ability array, per-level scaling formula; 2011 / 2011 records from MegaMUD 2.0 Beta P1 (Paradigm), 0 skipped; 12 spells verified field-by-field against the dialog |
 | `Classes.md`  | —                                                | not yet reversed |
 | `Paths.md`    | —                                                | not yet reversed |
 | `Races.md`    | —                                                | not yet reversed |
-| `Spells.md`   | —                                                | not yet reversed |
 
 The MDB2 framing (magic, 1024-byte pages, record header) is shared
 across all six, so most of the forward work is discovering each
@@ -52,9 +52,19 @@ of this repo)
 ```bash
 python3 decode_monsters_md.py path/to/Monsters.md monsters.overlay.json
 python3 decode_items_md.py    path/to/Items.md    items.overlay.json
+python3 decode_spells_md.py   path/to/Spells.md   spells.json
 ```
 
-Both scripts share the same CLI shape:
+`decode_monsters_md.py` additionally takes `--spells`, which resolves
+every spell Number it emits into a readable `"name (number)"` label
+(see [Cross-file spell names](#cross-file-spell-names) below):
+
+```bash
+python3 decode_monsters_md.py path/to/Monsters.md monsters.overlay.json \
+    --spells path/to/Spells.md
+```
+
+All three scripts share the same CLI shape:
 
 ```
 positional arguments:
@@ -67,6 +77,11 @@ options:
                     file small; consumers fill in defaults on read)
   --quiet           Suppress the per-distribution summary line
 ```
+
+`decode_spells_md.py` emits every record (spells have no "implicit
+defaults" tier to omit), so in place of `--emit-defaults` it takes
+`--keep-unknown`, which includes the raw `+0x28` overlay word in the
+output. `decode_monsters_md.py` additionally takes `--spells PATH`.
 
 Example against a stock install:
 
@@ -214,6 +229,119 @@ it on, or a single-toggle edit), the bit can be added to
 The corresponding **`Stop to kill if able`** monster checkbox **has
 been identified** — see the `decode_monsters_md.py` schema above and
 the Monsters.md overlay-block table below.
+
+### `decode_spells_md.py` — output schema
+
+Per-spell record matching the Spell Details dialog: the editable Spell
+box (left pane) plus the read-only "More Info" pane (right).
+
+```json
+{
+  "Number":         2,
+  "Name":           "illuminate",
+  "Code":           "illu",
+  "MinLevel":       2,
+  "Mana":           4,
+  "Type":           "Mage 1",
+  "TypeCode":       4,
+  "Targets":        ["Self"],
+  "TimedDuration":  true,
+  "EvilInCombat":   false,
+  "ItemActivated":  false,
+  "SpecialCommand": "",
+  "Difficulty":     5,
+  "MaxLevel":       24,
+  "Energy":         0,
+  "Duration":       70,
+  "CastType":       "Immediate",
+  "CastTypeCode":   3,
+  "Sphere":         "Normal",
+  "FromItem":       120,
+  "MdbTargets":     1,
+  "MinBase":        95,
+  "MaxBase":        95,
+  "Scaling":        { "MaxInc": 5, "MaxIncLevels": 2, "MinInc": 5, "DurInc": 1 },
+  "Abilities": [
+    { "Slot": 0, "Code": 13,  "Name": "Illu",    "Value": 0 },
+    { "Slot": 1, "Code": 115, "Name": "DescMsg", "Value": 10140 }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `Number` | int | Spell ID — the dialog's **WCC No**, and the same value `Monsters.md` stores in `DeathSpell` / `MidSpells` / `Attacks[].HitSpell` |
+| `Name` / `Code` | string | Display name and the 4-char cast code ("illu", "mmis") |
+| **Editable Spell box** | | |
+| `MinLevel` | int | "Minimum level" |
+| `Mana` | int | "Required Mana/Kai" |
+| `Type` / `TypeCode` | string / int | Class + circle — `Any`, `Priest 1..3`, `Mage 1..3`, `Druid 1..3`, `Bard 1`, `Mystic 1` |
+| `Targets` | array | Any of `Self` / `Player` / `Area` / `Monster` |
+| `TimedDuration` | bool | "Timed duration" checkbox |
+| `EvilInCombat` | bool | "Evil in combat" checkbox |
+| `ItemActivated` | bool | Set on exactly the 16 `use <item>` records (#10001–10077) |
+| `SpecialCommand` | string | "Special command" text field, e.g. `use cosmic staff` |
+| **Read-only "More Info" pane** | | |
+| `Difficulty` | int | Signed — negative values occur (sunbolt is −14) |
+| `MaxLevel` | int | "Max. level" (0 = the dialog omits the row) |
+| `Energy` | int | "Energy used" (0 renders as "None") |
+| `Duration` | int | Rounds (0 renders as "None"); negative values occur on enchantments |
+| `CastType` / `CastTypeCode` | string / int | `Immediate` or `Per round`. The 16 records with code `1` annotate the Max. level row "(always used)" |
+| `Sphere` | string | `Cold` / `Hot` / `Stone` / `Lightning` / `Normal` / `Water` / `Poison` |
+| `FromItem` | int | Items.md Number of the scroll/item taught from (0 = none) |
+| `MdbTargets` | int | The stock MDB `Targets` column, which drives the "Effects:" line. Kept alongside `Targets` because that one is user-editable and this one is not |
+| `MinBase` / `MaxBase` | int | Effect magnitude range |
+| `Scaling` | object | Per-level growth — see the formula below |
+| `Abilities[]` | array | Up to 10 `{Slot, Code, Name, Value}` entries, using the **same ability table as Monsters.md** |
+
+**Damage / effect formula.** The `Scaling` block is what the More Info
+pane's parenthesised expression renders from:
+
+    MinBase  to  (MaxBase + MaxInc * level / MaxIncLevels)
+
+| Spell | Dialog shows | MinBase | MaxBase | MaxInc | MaxIncLevels |
+|---|---|---|---|---|---|
+| magic missile | 6 to (15 + 1 \* level) | 6 | 15 | 1 | 1 |
+| lightning bolt | 12 to (20 + 2 \* level) | 12 | 20 | 2 | 1 |
+| way of the swan | 4(4 + 1 \* level / 3) | 4 | 4 | 1 | 3 |
+
+**Abilities.** Slot 0 is the primary effect, and its dialog magnitude
+comes from `MinBase`..`MaxBase` rather than its own `Value` — illuminate
+stores `Abil-0 = 13` (Illu) with `AbilVal-0 = 0`, `MinBase = MaxBase =
+95`, and the dialog renders `Illu: +95`. Slots 1–9 use their own values.
+Some reads that make the alignment obvious:
+
+| Spell | Abilities |
+|---|---|
+| petrification | ConfuseMsg, DescMsg, NonMagicalSpell, StartMsg, M.R. 100, Magical 10, DR 500, AC 100, Damage 5 |
+| form of the viper | JumpKDmg + Crits, JumpKAcc, KickAcc, PunchAcc, PunchDmg, KickDmg, Dodge |
+| purifying tonic | CurePoison + 9 × RemovesSpell, each pointing at a spell Number |
+
+### Cross-file spell names
+
+`Monsters.md` stores spell references as bare Numbers. With a
+`Spells.md` (or a `decode_spells_md.py` JSON) supplied via `--spells`,
+`decode_monsters_md.py` adds a `"name (number)"` label beside each one —
+`DeathSpell`, `CreateSpell`, every `MidSpells` slot, and every
+`Attacks[].HitSpell`:
+
+```json
+"DeathSpell": 1122,
+"DeathSpellLabel": "tree (1122)",
+"MidSpells": [
+  { "Spell": 1037, "Percent": 20, "Level": 100, "SpellLabel": "plant summon (1037)" }
+],
+"Attacks": [
+  { "Min": 65, "Max": 100, "Energy": 200, "HitSpell": 318,
+    "Percent": 20, "HitSpellLabel": "knockdown (318)" }
+]
+```
+
+The numeric fields are untouched, so the addition is purely additive and
+output without `--spells` is byte-identical to before. Unresolvable
+Numbers render as `unknown (N)` rather than being dropped, so a trimmed
+`Spells.md` degrades visibly. Across the Paradigm `Monsters.md`,
+**1314 / 1314** references resolve with none unknown.
 
 ## File format reverse-engineered
 
@@ -367,8 +495,9 @@ via exhaustive string + numeric searches across the full file):
 - **Group** (dialog string like "Slums, Sewers" / "Graveyard Crypt")
   and **Location** (`Map X, Room Y`) — derived from room / lair table
   joins at display time, not stored per-monster.
-- **DeathSpell-as-text** — the `DeathSpell` Number is extracted, but
-  rendering the spell name would need a `Spells.md` decoder.
+- ~~**DeathSpell-as-text**~~ — **resolved.** Pass `--spells` to render
+  every spell reference as `"name (number)"`; see
+  [Cross-file spell names](#cross-file-spell-names).
 
 Per the project's scope (decode what `Monsters.md` stores), nothing
 above is a gap in the decoder — they're either elsewhere on disk or
@@ -463,7 +592,202 @@ many stock items (waterskin, e.g.) that doesn't move when toggling any
 of the UI Options. Probably another internal categorization byte; not
 surfaced by the decoder.
 
-### Validation methodology
+### Spells.md layout (fixed-offset, constant-length payload)
+
+Spells.md is the **easiest** of the three. Like Items.md it is
+fixed-layout with no anchor scanning, and better still the payload
+length is constant: the marker byte is `0xa5 + digit-count` and the
+`0x80` sentinel sits digit-count bytes further in, so the run from the
+sentinel to end-of-record is **always `0x9f` bytes** no matter how wide
+the Number is. Records pack 3–4 per page.
+
+All offsets below are relative to the `0x80` sentinel. The "MDB" column
+names the matching column in an exported `Spells.json`.
+
+| Offset | Type | Field | MDB column | Dialog label |
+|---|---|---|---|---|
+| `+0x01` | u16 | Number | `Number` | WCC No |
+| `+0x03` | 30B str | Name | `Name` | Name |
+| `+0x21` | 7B str | Code | `Short` | Code |
+| `+0x28` | u16 | **MegaMUD overlay bitfield** | — | target checkboxes, Timed duration, Evil in combat |
+| `+0x2C` | 26B str | Special command | — | Special command |
+| `+0x55` | u8 | MinLevel | `ReqLevel` | Minimum level |
+| `+0x56` | u8 | MaxInc | `MaxInc` | — |
+| `+0x57` | u16 | Mana | `ManaCost` | Required Mana/Kai |
+| `+0x59` | u16 | Energy | `EnergyCost` | Energy used (0 = None) |
+| `+0x5B` | i16 | MinBase | `MinBase` | — |
+| `+0x5D` | i16 | MaxBase | `MaxBase` | — |
+| `+0x5F` | i16 | Duration | `Dur` | Duration (rounds) |
+| `+0x61` | i16 | Difficulty | `Diff` | Difficulty |
+| `+0x63` | u8 | Targets (stock) | `Targets` | drives "Effects:" |
+| `+0x64` | u8 | Class + circle | `Magery` + `MageryLVL` | Type |
+| `+0x65` | u8 | Sphere | `AttType` | Sphere |
+| `+0x66` + 2k | 10 × u16 | Abil-0..9 | `Abil-0..9` | More Info ability rows |
+| `+0x7A` + 2k | 10 × i16 | AbilVal-0..9 | `AbilVal-0..9` | " |
+| `+0x8E` | u8 | MaxLevel | `Cap` | Max. level |
+| `+0x8F` | u8 | MaxIncLevels | `MaxIncLVLs` | — |
+| `+0x90` | u8 | MinInc | `MinInc` | — |
+| `+0x91` | u8 | DurInc | `DurInc` | — |
+| `+0x92` | u8 | Cast type (0 / 1 / 3) | — | Cast type |
+| `+0x93` | u16 | FromItem | (`Learned From`) | From item |
+
+Bytes `+0x46`–`+0x54` and `+0x95`–`+0x9E` are always zero.
+
+**Unused ability-value slots hold `0x2020`**, not zero — space padding
+inherited from the source MDB's text columns (the exported
+`Spells.json` shows the same 8224 filler). Decoding them naively yields
+a bogus 8224 on most records.
+
+### Spells.md — Type, the class/circle byte
+
+`+0x64` folds the MDB's `Magery` (class) and `MageryLVL` (circle)
+columns into one byte. Cross-tabulating the pair against it across 1994
+records is fully deterministic:
+
+| MDB `Magery` | Class | `MageryLVL` 0/1 | 2 | 3 |
+|---|---|---|---|---|
+| 0 | none | 0 | | |
+| 2 | Priest | 1 | 2 | 3 |
+| 1 | Mage | 4 | 5 | 6 |
+| 3 | Druid | 7 | 8 | 9 |
+| 4 | Bard | 10 | — | — |
+| 5 | Mystic | 11 | — | — |
+
+The encoding is **compact, not a flat sequential index** over the radio
+grid — Bard and Mystic each occupy a single value rather than Bard
+owning 10/11/12 with Mystic at 13. Confirmed by dialog: `way of the cat`
+and `way of the swan` both store 11 and both render **Mystic 1**.
+
+### Spells.md — Sphere (MDB `AttType`)
+
+| Value | Sphere | Dialog witness |
+|---|---|---|
+| 0 | Cold | frost jet |
+| 1 | **Hot** | sunbolt |
+| 2 | **Stone** | stonestrike |
+| 3 | Lightning | lightning bolt |
+| 4 | Normal | illuminate, magic missile |
+| 5 | **Water** | acid jet |
+| 6 | Poison | bites |
+
+**Don't guess these names** — three are counter-intuitive and cohort
+inference gets them wrong: 1 is "Hot" not Fire, 2 is "Stone" not Earth,
+and 5 is "Water" not Acid (acid jet's sphere reads **Water**). They
+line up with the ability table's `Resist-*` entries: Resist-Cold,
+Resist-Fire, Resist-Stone, Resist-Lightning, Resist-Water.
+
+### Spells.md overlay block (`+0x28`)
+
+`+0x28` matches **no** MDB column at any offset/encoding. It is
+MegaMUD's own per-spell overlay — the same role the `+0x6E` Options
+word plays in Items.md — and holds every editable checkbox in the
+dialog's Spell box:
+
+| Bit | Flag |
+|---|---|
+| `0x0001` | item-activated (exactly the 16 `use <item>` records, #10001–10077) |
+| `0x0002` | **Timed duration** |
+| `0x0004` | **Evil in combat** |
+| `0x0008` | Cast type Immediate (mirrors `+0x92 == 3` exactly, 2011/2011) |
+| `0x0010` | target **Self** |
+| `0x0020` | target **Player** |
+| `0x0040` | target **Monster** |
+| `0x0080` | target **Area** |
+
+Note the target bit order is Self / Player / **Monster** / **Area** —
+*not* the order the checkboxes are laid out in the dialog (Self, Player
+/ Area, Monster).
+
+These are the editable overlay; the MDB `Targets` column at `+0x63` is
+the stock value the read-only "Effects:" line renders from. The two
+agree throughout the stock corpus — each `+0x63` value maps to exactly
+one checkbox set (`1` → Self, `2` → Self+Player, `4` → Monster, `6` →
+Self+Monster, `8` → Player+Monster, `7` → Self+Player+Monster, `11`/`12`
+→ Area, `13` → Self+Area; `0` is the monster-spell catch-all and
+varies) — but since one is editable and the other is not, the decoder
+reports both.
+
+### Spells.md — the "Use:" dropdown is not per-spell data
+
+Its options are *installed defaults / for all characters / only for this
+BBS / only for this character* — the same override-tier selector the
+Items.md methodology below refers to as `Use: installed defaults`. It
+chooses which data layer the dialog reads and writes, so it is not
+stored per record and no byte in the payload correlates with it. Every
+spell captured reads "only for this character" because that is the tier
+the session was on.
+
+### Fields NOT stored in Spells.md
+
+Present in an exported `Spells.json` but absent from the binary — the
+best-scoring offset for each is one of the always-zero trailing bytes,
+i.e. it only matches the zero-valued majority:
+
+- `TypeOfResists` (83.6% — spurious), `MageryLVL` as a standalone
+  column (85.4% — folded into `+0x64`), `Learnable` (85.9%)
+- `MinIncLVLs` (93.6%, best offset is `MaxIncLVLs`) and `DurIncLVLs`
+  (90.2%, best offset is `DurInc`) — MegaMUD keeps only one of each
+  pair. In the MDB itself `MinIncLVLs == MaxIncLVLs` for 1871/1994
+  records and `DurIncLVLs == DurInc` for 1801/1994, which is exactly
+  the ceiling those offsets hit. That equality-rate ceiling is the
+  signature of a field that isn't stored at all.
+- `Classes`, `Casted By` — join-derived strings, not per-spell data.
+
+## Validation methodology — Spells.md
+
+Same JSON cross-reference sweep used for the Monsters.md stat block:
+brute-force every (offset, encoding) pair against every numeric column
+of an exported `Spells.json` and count exact matches. Against the
+Paradigm 1.9.1 MDB export (1994 Numbers shared with the `.md`):
+
+| Field | Match |
+|---|---|
+| Energy, Sphere, Type | 100.00% |
+| MdbTargets, MinLevel | 99.95% |
+| Difficulty, DurInc | 99.90% |
+| MaxBase, MaxLevel | 99.85% |
+| Abilities (code + value, 5758 populated slots) | 99.84% |
+| Mana, MaxInc, MinInc | 99.80% |
+| MinBase, MaxIncLevels | 99.75% |
+| Duration | 99.70% |
+
+The residual handful are genuine data drift — the `.md` was built from a
+different snapshot than the 1.9.1 MDB, and where they disagree **the
+`.md` is what MegaMUD displays** (illuminate's targets: the `.md` says
+Self, the MDB export says Player, and the dialog shows **Self**
+checked). `ReqLevel` has exactly one mismatch, `#1252`, where the MDB
+holds 999 and the `.md` holds 231 — a u8 truncation of 999, not a decode
+error.
+
+Independently, `FromItem` at `+0x93` resolves for **544 / 544** non-zero
+records to a real Items.md entry, and every one is named `scroll of
+<that spell's name>`.
+
+**Dialog verification.** Twelve spells checked field-by-field against
+Spell Details — illuminate, magic missile, frost jet, lightning bolt,
+sunbolt, stonestrike, acid jet, way of the cat, way of the swan, bites,
+arrow trap, wounded — covering Mage / Druid / Mystic / Any types, all
+three cast types, both target nibbles, every checkbox state, and all
+seven spheres. **All twelve match on every visible field.**
+
+The `+0x28` bits were pinned with a controlled set: five
+`Targets = Self` spells differing only in the low nibble, so each bit
+isolates against illuminate as baseline.
+
+| # | Spell | `+0x28` | Timed | Evil | Cast type |
+|---|---|---|---|---|---|
+| 623 | arrow trap | 20 | ☐ | ☑ | Per round |
+| 36 | way of the swan | 24 | ☐ | ☐ | Immediate |
+| 2 | illuminate | 26 | ☑ | ☐ | Immediate |
+| 455 | wounded | 30 | ☑ | ☑ | Immediate |
+
+Illuminate vs way of the swan differ in exactly bit `0x02` and exactly
+the Timed duration checkbox; arrow trap vs way of the swan swap bits
+`0x04`/`0x08` and swap Evil-in-combat/Immediate. `#1 magic missile`
+(100) and `#80 bites` (98) then pin the target nibble as Player+Monster
+against illuminate's Self.
+
+## Validation methodology — Items.md
 
 Items.md's bit assignments were locked down via **single-flag edit
 diffs** against the stock binary — the cleanest possible probe:
@@ -566,9 +890,9 @@ in the legacy file: `Enemy / Normal / DontBackstab / Level=1 / MaxHP=15
 stat-block values identical to the beta file (as expected, since
 they're the same realm data).
 
-## Combined findings — what's the same across both files
+## Combined findings — what's the same across all three files
 
-Both Monsters.md and Items.md share:
+Monsters.md, Items.md and Spells.md share:
 
 1. **MDB2 magic** at file offset 0.
 2. **1024-byte (0x400) page-allocated** record layout, with records
@@ -576,15 +900,17 @@ Both Monsters.md and Items.md share:
 3. **Identical record header** — a marker byte / `0x01` / ASCII Number
    digits / `0x80` sentinel / LE u16 Number cross-check / null-terminated
    Name string.
-4. **Variable string-table area after the Name** — Monsters.md uses
-   this for spell-name references the monster casts; Items.md uses it
-   for shop-display strings. Both are zero-or-more null-terminated
-   ASCII strings, terminated by null padding before the overlay block.
+4. **String area after the Name** — Monsters.md uses this for
+   spell-name references the monster casts; Items.md for shop-display
+   strings; Spells.md for the 4-char cast Code and the Special command.
+5. **The same ability-code table** (`ABILITY_NAMES`) — monsters and
+   spells both encode their effects as `{code, value}` slots drawn from
+   one shared MajorMUD ability enum. That is what lets Spells.md
+   resolve `Monsters.md`'s spell references.
 
-The same scanner regex finds every record in either file. Most of the
-forward work for the remaining MDB2 files (Classes / Paths / Races /
-Spells) is discovering each file's per-record payload, not redoing
-the framing.
+The same scanner regex finds every record in any of the three. Most of
+the forward work for the remaining MDB2 files (Classes / Paths / Races)
+is discovering each file's per-record payload, not redoing the framing.
 
 ## Combined findings — what's different
 
@@ -596,6 +922,11 @@ The overlay block's structure varies:
   how many spell-name reference strings the monster has after its
   name. The decoder scans for the rel byte using a heuristic
   (in-range value + extended trailing zeros + sane preceding bytes).
+
+- **Spells.md** is the simplest: **fixed offsets from the `0x80`
+  sentinel**, and the payload after that sentinel is a **constant
+  `0x9f` bytes** on every record regardless of Number width. No anchor
+  scanning, no variable-width region to skip.
 
 - **Items.md** uses **fixed record-relative offsets** for every
   overlay field. The shop-display strings sit in fixed-width slots
@@ -610,9 +941,12 @@ field offsets are known — no anchor-scanning needed.
 
 - **Group** — dialog string (e.g. "Slums, Sewers" / "Graveyard Crypt").
   Likely derived from room/lair table joins, not stored per-monster.
-- **Death spell rendered as text** — `DeathSpell` field is extracted
-  as a Number; the dialog labels it with the spell's name (e.g. "tree"
-  for hanging tree). Resolution would require a `Spells.md` decoder.
+- ~~**Death spell rendered as text**~~ — **resolved** by
+  `decode_spells_md.py`. `decode_monsters_md.py --spells Spells.md` now
+  labels `DeathSpell` / `CreateSpell` / `MidSpells` /
+  `Attacks[].HitSpell` as `"name (number)"` — hanging tree's death
+  spell renders `tree (1122)`, matching the dialog exactly. 1314 / 1314
+  references resolve across the Paradigm `Monsters.md`.
 - **Location** — dialog "Map X, Room Y" — derived from room
   population data, not stored in `Monsters.md`.
 - **Multi-record sections**: the dialog shows multiple `Attacks:` rows
@@ -651,7 +985,10 @@ field offsets are known — no anchor-scanning needed.
 - **MegaMUD 2.0 Beta P1 (Stock)** — `Default/Monsters.md`
   (1099 / 1100 records, 1 orphan with empty name skipped) and
   `Default/Items.md` (1950 / 1950 records).
-- **MegaMUD 2.0 Beta P1 (Paradigm)** — same versions of both files.
+- **MegaMUD 2.0 Beta P1 (Paradigm)** — same versions of both files,
+  plus `Default/Spells.md` (2011 / 2011 records, 0 skipped), validated
+  against a `Spells.json` export of the Paradigm 1.9.1 MDB and against
+  the Spell Details dialog for 12 spells.
 - **Legacy MegaMUD `MONSTERS.md`** — 1737 / 1738 records (one orphan
   empty-name at #84, same in every variant), confirms the decoder is
   format-agnostic across MegaMUD versions.
